@@ -1,10 +1,11 @@
 use iced::advanced::svg;
 use iced::widget::{Action, canvas, center};
+use rodio::{Decoder, MixerDeviceSink};
 use shakmaty::Position;
 
 // sounds
-// const MOVE_SOUND: &[u8] = include_bytes!("../assets/sounds/Move.ogg");
-// const CAPTURE_SOUND: &[u8] = include_bytes!("../assets/sounds/Capture.ogg");
+const MOVE_SOUND: &[u8] = include_bytes!("../assets/sounds/Move.ogg");
+const CAPTURE_SOUND: &[u8] = include_bytes!("../assets/sounds/Capture.ogg");
 
 // White pieces
 const WK: &[u8] = include_bytes!("../assets/pieces/wK.svg");
@@ -30,6 +31,8 @@ const SQUARE_WIDTH: f32 = 80.0;
 
 struct App {
     screen: Screen,
+    _sink_handle: MixerDeviceSink,
+    audio_player: rodio::Player,
 }
 
 enum Screen {
@@ -77,21 +80,28 @@ impl App {
     }
 
     fn new() -> Self {
+        let mut sink_handle =
+            rodio::DeviceSinkBuilder::open_default_sink().expect("open default audio stream");
+        sink_handle.log_on_drop(false);
+        let audio_player = rodio::Player::connect_new(&sink_handle.mixer());
+
+        let svg_pieces = SvgPieces {
+            wk: svg::Handle::from_memory(WK),
+            wq: svg::Handle::from_memory(WQ),
+            wb: svg::Handle::from_memory(WB),
+            wn: svg::Handle::from_memory(WN),
+            wr: svg::Handle::from_memory(WR),
+            wp: svg::Handle::from_memory(WP),
+            bk: svg::Handle::from_memory(BK),
+            bq: svg::Handle::from_memory(BQ),
+            bb: svg::Handle::from_memory(BB),
+            bn: svg::Handle::from_memory(BN),
+            br: svg::Handle::from_memory(BR),
+            bp: svg::Handle::from_memory(BP),
+        };
+
         let board = Board {
-            svg_pieces: SvgPieces {
-                wk: svg::Handle::from_memory(WK),
-                wq: svg::Handle::from_memory(WQ),
-                wb: svg::Handle::from_memory(WB),
-                wn: svg::Handle::from_memory(WN),
-                wr: svg::Handle::from_memory(WR),
-                wp: svg::Handle::from_memory(WP),
-                bk: svg::Handle::from_memory(BK),
-                bq: svg::Handle::from_memory(BQ),
-                bb: svg::Handle::from_memory(BB),
-                bn: svg::Handle::from_memory(BN),
-                br: svg::Handle::from_memory(BR),
-                bp: svg::Handle::from_memory(BP),
-            },
+            svg_pieces,
             black_orientation: false,
             position: shakmaty::Chess::new(),
             history: vec![],
@@ -100,6 +110,8 @@ impl App {
 
         App {
             screen: Screen::Play(board),
+            _sink_handle: sink_handle,
+            audio_player,
         }
     }
 
@@ -107,20 +119,20 @@ impl App {
         match message {
             Message::ChessMove([from_square, to_square]) => match &mut self.screen {
                 Screen::Play(board) => {
-                    // let mut sound = MOVE_SOUND;
+                    let mut sound = MOVE_SOUND;
                     let uci_move = shakmaty::uci::UciMove::Normal {
                         from: from_square,
                         to: to_square,
                         promotion: None,
                     };
                     if let Ok(legal_move) = uci_move.to_move(&board.position) {
-                        // if legal_move.is_capture() {
-                        //     sound = CAPTURE_SOUND;
-                        // }
-                        // if let Ok(source) = Decoder::new(std::io::Cursor::new(sound)) {
-                        //     self.audio_player.stop();
-                        //     self.audio_player.append(source);
-                        // }
+                        if legal_move.is_capture() {
+                            sound = CAPTURE_SOUND;
+                        }
+                        if let Ok(source) = Decoder::new(std::io::Cursor::new(sound)) {
+                            self.audio_player.stop();
+                            self.audio_player.append(source);
+                        }
                         if let Ok(new_pos) = board.position.clone().play(legal_move) {
                             board.position = new_pos;
                             board.history.push(uci_move.to_string());
@@ -295,6 +307,25 @@ impl canvas::Program<Message> for Board {
                     (rank * SQUARE_WIDTH as u32) as f32,
                 );
                 let rect = canvas::Path::rectangle(top_left, square_size);
+
+                // last move highlight
+                if let Some(lm) = self.last_move {
+                    if let Some(from) = lm.from() {
+                        if from == square {
+                            if light_square {
+                                color = light_last_move_color;
+                            } else {
+                                color = dark_last_move_color;
+                            };
+                        } else if lm.to() == square {
+                            if light_square {
+                                color = light_last_move_color;
+                            } else {
+                                color = dark_last_move_color;
+                            };
+                        }
+                    }
+                }
 
                 // prevent drawing duplicate piece while dragging
                 // highlight dragging from square while dragging
