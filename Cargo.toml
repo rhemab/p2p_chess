@@ -14,3 +14,10 @@ shakmaty = "0.30.2"
 tokio = { version = "1.53.3", features = ["full"] }
 tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
 webrtc = "0.21.1"
+
+[package.metadata.packager]
+name = "p2p_chess"
+product-name = "Peer-to-peer chess"
+identifier = "com.balestech.p2pchess"
+version = "0.1.0"
+before-packaging-command = "cargo build --release"
