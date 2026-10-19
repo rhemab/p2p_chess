@@ -1,7 +1,15 @@
+#![windows_subsystem = "windows"]
+
 use iced::advanced::svg;
 use iced::widget::{Action, canvas, center};
+
 use rodio::{Decoder, MixerDeviceSink};
+
 use shakmaty::Position;
+
+use tokio::sync::mpsc;
+
+mod webrtc;
 
 // sounds
 const MOVE_SOUND: &[u8] = include_bytes!("../assets/sounds/Move.ogg");
@@ -33,6 +41,12 @@ struct App {
     screen: Screen,
     _sink_handle: MixerDeviceSink,
     audio_player: rodio::Player,
+    connection: Connection,
+}
+
+enum Connection {
+    Connected(mpsc::Sender<Message>),
+    Disconnected,
 }
 
 enum Screen {
@@ -56,6 +70,11 @@ struct SvgPieces {
 
 enum Message {
     ChessMove([shakmaty::Square; 2]),
+    Connected(mpsc::Sender<Message>),
+    Disconnected,
+    UciMove(String),
+    NewGame(String),
+    Initiator,
 }
 
 struct Board {
@@ -68,6 +87,7 @@ struct Board {
 
 fn main() -> iced::Result {
     iced::application(App::new, App::update, App::view)
+        .subscription(App::subscription)
         .theme(App::theme)
         .title("P2P Chess")
         .centered()
@@ -112,11 +132,60 @@ impl App {
             screen: Screen::Play(board),
             _sink_handle: sink_handle,
             audio_player,
+            connection: Connection::Disconnected,
         }
     }
 
     fn update(&mut self, message: Message) {
         match message {
+            Message::Connected(tx) => {
+                self.connection = Connection::Connected(tx);
+                println!("Connected!");
+            }
+            Message::Disconnected => {
+                println!("Disconnected!");
+            }
+            Message::Initiator => match &mut self.connection {
+                Connection::Connected(tx) => {
+                    tx.try_send(Message::NewGame("black".to_string())).unwrap();
+                }
+                _ => {}
+            },
+            Message::NewGame(side) => match &mut self.screen {
+                Screen::Play(board) => {
+                    if side == "black" {
+                        board.black_orientation = true;
+                    }
+                    board.position = shakmaty::Chess::new();
+                    board.history.clear();
+                    board.last_move = None;
+                }
+            },
+            Message::UciMove(s) => {
+                // got move from peer: play move
+                match &mut self.screen {
+                    Screen::Play(board) => {
+                        let mut sound = MOVE_SOUND;
+                        if let Ok(uci_move) = s.parse::<shakmaty::uci::UciMove>() {
+                            if let Ok(legal_move) = uci_move.to_move(&board.position) {
+                                if legal_move.is_capture() {
+                                    sound = CAPTURE_SOUND;
+                                }
+                                if let Ok(source) = Decoder::new(std::io::Cursor::new(sound)) {
+                                    self.audio_player.stop();
+                                    self.audio_player.append(source);
+                                }
+                                if let Ok(new_pos) = board.position.clone().play(legal_move) {
+                                    board.position = new_pos;
+                                    board.history.push(uci_move.to_string());
+                                    // board.last_move_uci = uci_move.to_string();
+                                    board.last_move = Some(legal_move);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             Message::ChessMove([from_square, to_square]) => match &mut self.screen {
                 Screen::Play(board) => {
                     let mut sound = MOVE_SOUND;
@@ -136,8 +205,15 @@ impl App {
                         if let Ok(new_pos) = board.position.clone().play(legal_move) {
                             board.position = new_pos;
                             board.history.push(uci_move.to_string());
-                            // board.last_move_uci = uci_move.to_string();
                             board.last_move = Some(legal_move);
+
+                            // send uci to peer
+                            match &mut self.connection {
+                                Connection::Connected(tx) => {
+                                    tx.try_send(Message::UciMove(uci_move.to_string())).unwrap();
+                                }
+                                _ => {}
+                            }
                         }
                     }
                 }
@@ -149,6 +225,10 @@ impl App {
         match &self.screen {
             Screen::Play(board) => center(canvas(board).width(640).height(640)).into(),
         }
+    }
+
+    fn subscription(&self) -> iced::Subscription<Message> {
+        iced::Subscription::run(webrtc::connect)
     }
 }
 
