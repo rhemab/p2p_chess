@@ -20,4 +20,7 @@ name = "p2p_chess"
 product-name = "Peer-to-peer chess"
 identifier = "com.balestech.p2pchess"
 version = "0.1.0"
+icons = [
+    "assets/icon.png"
+]
 before-packaging-command = "cargo build --release"

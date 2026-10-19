@@ -1,7 +1,7 @@
 #![windows_subsystem = "windows"]
 
 use iced::advanced::svg;
-use iced::widget::{Action, canvas, center};
+use iced::widget::{Action, button, canvas, center, text};
 
 use rodio::{Decoder, MixerDeviceSink};
 
@@ -50,6 +50,7 @@ enum Connection {
 }
 
 enum Screen {
+    Menu,
     Play(Board),
 }
 
@@ -68,6 +69,7 @@ struct SvgPieces {
     bp: svg::Handle,
 }
 
+#[derive(Clone)]
 enum Message {
     ChessMove([shakmaty::Square; 2]),
     Connected(mpsc::Sender<Message>),
@@ -75,6 +77,7 @@ enum Message {
     UciMove(String),
     NewGame(String),
     Initiator,
+    Play,
 }
 
 struct Board {
@@ -83,6 +86,7 @@ struct Board {
     position: shakmaty::Chess,
     history: Vec<String>,
     last_move: Option<shakmaty::Move>,
+    waiting_for_opponent: bool,
 }
 
 fn main() -> iced::Result {
@@ -105,31 +109,8 @@ impl App {
         sink_handle.log_on_drop(false);
         let audio_player = rodio::Player::connect_new(&sink_handle.mixer());
 
-        let svg_pieces = SvgPieces {
-            wk: svg::Handle::from_memory(WK),
-            wq: svg::Handle::from_memory(WQ),
-            wb: svg::Handle::from_memory(WB),
-            wn: svg::Handle::from_memory(WN),
-            wr: svg::Handle::from_memory(WR),
-            wp: svg::Handle::from_memory(WP),
-            bk: svg::Handle::from_memory(BK),
-            bq: svg::Handle::from_memory(BQ),
-            bb: svg::Handle::from_memory(BB),
-            bn: svg::Handle::from_memory(BN),
-            br: svg::Handle::from_memory(BR),
-            bp: svg::Handle::from_memory(BP),
-        };
-
-        let board = Board {
-            svg_pieces,
-            black_orientation: false,
-            position: shakmaty::Chess::new(),
-            history: vec![],
-            last_move: None,
-        };
-
         App {
-            screen: Screen::Play(board),
+            screen: Screen::Menu,
             _sink_handle: sink_handle,
             audio_player,
             connection: Connection::Disconnected,
@@ -143,11 +124,21 @@ impl App {
                 println!("Connected!");
             }
             Message::Disconnected => {
+                self.screen = Screen::Menu;
                 println!("Disconnected!");
+            }
+            Message::Play => {
+                self.screen = Screen::Play(Board::new());
             }
             Message::Initiator => match &mut self.connection {
                 Connection::Connected(tx) => {
                     tx.try_send(Message::NewGame("black".to_string())).unwrap();
+                    match &mut self.screen {
+                        Screen::Play(board) => {
+                            board.waiting_for_opponent = false;
+                        }
+                        _ => {}
+                    }
                 }
                 _ => {}
             },
@@ -156,10 +147,9 @@ impl App {
                     if side == "black" {
                         board.black_orientation = true;
                     }
-                    board.position = shakmaty::Chess::new();
-                    board.history.clear();
-                    board.last_move = None;
+                    board.waiting_for_opponent = false;
                 }
+                _ => {}
             },
             Message::UciMove(s) => {
                 // got move from peer: play move
@@ -184,6 +174,7 @@ impl App {
                             }
                         }
                     }
+                    _ => {}
                 }
             }
             Message::ChessMove([from_square, to_square]) => match &mut self.screen {
@@ -217,18 +208,29 @@ impl App {
                         }
                     }
                 }
+                _ => {}
             },
         }
     }
 
     fn view(&self) -> iced::Element<'_, Message> {
         match &self.screen {
-            Screen::Play(board) => center(canvas(board).width(640).height(640)).into(),
+            Screen::Play(board) => {
+                if board.waiting_for_opponent {
+                    center(text("waiting for opponent...")).into()
+                } else {
+                    center(canvas(board).width(640).height(640)).into()
+                }
+            }
+            Screen::Menu => center(button("Play").on_press(Message::Play)).into(),
         }
     }
 
     fn subscription(&self) -> iced::Subscription<Message> {
-        iced::Subscription::run(webrtc::connect)
+        match self.screen {
+            Screen::Play(_) => iced::Subscription::run(webrtc::connect),
+            _ => iced::Subscription::none(),
+        }
     }
 }
 
@@ -443,6 +445,33 @@ impl canvas::Program<Message> for Board {
 }
 
 impl Board {
+    fn new() -> Self {
+        let svg_pieces = SvgPieces {
+            wk: svg::Handle::from_memory(WK),
+            wq: svg::Handle::from_memory(WQ),
+            wb: svg::Handle::from_memory(WB),
+            wn: svg::Handle::from_memory(WN),
+            wr: svg::Handle::from_memory(WR),
+            wp: svg::Handle::from_memory(WP),
+            bk: svg::Handle::from_memory(BK),
+            bq: svg::Handle::from_memory(BQ),
+            bb: svg::Handle::from_memory(BB),
+            bn: svg::Handle::from_memory(BN),
+            br: svg::Handle::from_memory(BR),
+            bp: svg::Handle::from_memory(BP),
+        };
+
+        let board = Board {
+            svg_pieces,
+            black_orientation: false,
+            position: shakmaty::Chess::new(),
+            history: vec![],
+            last_move: None,
+            waiting_for_opponent: true,
+        };
+
+        board
+    }
     fn piece_to_svg(&self, piece: shakmaty::Piece) -> &iced::advanced::svg::Handle {
         match (piece.color, piece.role) {
             (shakmaty::Color::White, shakmaty::Role::Pawn) => &self.svg_pieces.wp,
